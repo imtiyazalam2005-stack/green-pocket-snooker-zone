@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase, configured } from './supabase';
 import { Activity, Banknote, Clock3, LogOut, Plus, RefreshCw, ShieldCheck, Table2, Wallet } from 'lucide-react';
