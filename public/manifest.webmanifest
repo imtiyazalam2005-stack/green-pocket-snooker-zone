@@ -1,0 +1,9 @@
+{
+  "name": "Green Pocket Snooker Zone",
+  "short_name": "Green Pocket",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f3",
+  "theme_color": "#10251d",
+  "description": "Snooker table management and billing"
+}
