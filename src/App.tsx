@@ -1,19 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase, configured } from './supabase';
 import { Activity, Banknote, Clock3, LogOut, Plus, RefreshCw, ShieldCheck, Table2, Wallet } from 'lucide-react';
 
 type Profile = { id: string; full_name: string; role: 'owner' | 'staff'; active: boolean };
-type TableRow = { id: string; table_number: number; label: string; active: boolean };
-type PlaySession = { id: string; table_id: string; started_at: string; ended_at: string | null; status: string; started_by: string; ended_by: string | null; amount_paise: number | null; billable_minutes: number | null };
+type TableRow = { id: string; table_number: number; label: string; active: boolean; hourly_rate_paise: number };
+type PlaySession = { id: string; table_id: string; started_at: string; ended_at: string | null; status: string; started_by: string; ended_by: string | null; amount_paise: number | null; billable_minutes: number | null; hourly_rate_paise: number };
 type Payment = { id: string; session_id: string; amount_paise: number; method: 'cash' | 'upi'; invoice_no: string; paid_at: string; received_by: string };
 type Audit = { id: string; action: string; details: any; created_at: string; actor_id: string };
 type Expense = { id: string; amount_paise: number; description: string; created_at: string };
 
-const RATE_PAISE_PER_HOUR = 25000;
 const money = (paise: number) => '₹' + (paise / 100).toFixed(2);
 const elapsed = (start: string) => Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 60000));
-const charge = (minutes: number) => Math.ceil(minutes * RATE_PAISE_PER_HOUR / 60);
+const charge = (minutes: number, ratePaise: number) => Math.ceil(minutes * ratePaise / 60);
 const fmtTime = (iso: string) => new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
 
 export default function App() {
@@ -35,6 +34,7 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [newExpense, setNewExpense] = useState('');
   const [expenseNote, setExpenseNote] = useState('');
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     if (!supabase || !session) return;
@@ -129,6 +129,16 @@ export default function App() {
     setBusy(false);
   }
 
+  async function updateTableRate(table: TableRow) {
+    if (!supabase || profile?.role !== 'owner') return;
+    const rupees = Number(rateDrafts[table.id] ?? (table.hourly_rate_paise / 100).toString());
+    if (!Number.isFinite(rupees) || rupees <= 0) { setError('Enter a valid hourly rate greater than zero.'); return; }
+    setBusy(true); setError(''); setNotice('');
+    const { error } = await supabase.rpc('update_table_rate', { p_table_id: table.id, p_hourly_rate_paise: Math.round(rupees * 100) });
+    if (error) setError(error.message); else { setNotice(`${table.label} rate updated to ${money(Math.round(rupees * 100))} per hour.`); await refresh(); }
+    setBusy(false);
+  }
+
   async function addExpense(e: React.FormEvent) {
     e.preventDefault();
     if (!supabase) return;
@@ -172,12 +182,13 @@ export default function App() {
       <nav className="tabs"><button className={tab==='tables'?'selected':''} onClick={()=>setTab('tables')}>Tables & billing</button>{profile.role==='owner' && <><button className={tab==='reports'?'selected':''} onClick={()=>setTab('reports')}>Cash & reports</button><button className={tab==='audit'?'selected':''} onClick={()=>setTab('audit')}>Audit log</button></>}</nav>
       {error && <div className="alert error">{error}</div>}{notice && <div className="alert success">{notice}</div>}
       {tab==='tables' && <>
-        <div className="section-heading"><div><h2>Table status</h2><p className="muted">Rate: ₹250 per hour · billed proportionally by the minute, rounded up to the next minute.</p></div>{profile.role==='owner' && <button className="secondary" onClick={addTable} disabled={busy}><Plus size={16}/> Add table</button>}</div>
+        <div className="section-heading"><div><h2>Table status</h2><p className="muted">Each table has its own hourly rate. Billing is calculated by the minute and rounded up to the next minute.</p></div>{profile.role==='owner' && <button className="secondary" onClick={addTable} disabled={busy}><Plus size={16}/> Add table</button>}</div>
         <div className="table-grid">{tables.map(t=>{
           const running=activeByTable.get(t.id);
           const minutes=running?elapsed(running.started_at):0;
-          const bill=running?charge(minutes):0;
-          return <article className={`table-card ${running?'occupied':''}`} key={t.id}><div className="table-card-head"><span className="table-label">{t.label}</span><span className={`status ${running?'busy':'free'}`}>{running?'IN USE':'AVAILABLE'}</span></div>{running?<><div className="timer">{Math.floor(minutes/60).toString().padStart(2,'0')}:{(minutes%60).toString().padStart(2,'0')}</div><div className="started">Started {fmtTime(running.started_at)}</div><div className="estimate"><span>Current estimate</span><strong>{money(bill)}</strong></div><button className="danger full" disabled={busy} onClick={()=>endTable(t)}>End session & create bill</button></>:<><div className="empty-state"><div className="table-icon"><Table2 size={26}/></div><strong>Ready for next game</strong><span>No active session</span></div><button className="primary full" disabled={busy} onClick={()=>startTable(t)}>Start session</button></>}</article>
+          const ratePaise = running?.hourly_rate_paise ?? t.hourly_rate_paise;
+          const bill=running?charge(minutes, ratePaise):0;
+          return <article className={`table-card ${running?'occupied':''}`} key={t.id}><div className="table-card-head"><span className="table-label">{t.label}</span><span className={`status ${running?'busy':'free'}`}>{running?'IN USE':'AVAILABLE'}</span></div><div className="table-rate">₹{(ratePaise/100).toFixed(0)} / hour{running ? ' (session rate)' : ''}</div>{running?<><div className="timer">{Math.floor(minutes/60).toString().padStart(2,'0')}:{(minutes%60).toString().padStart(2,'0')}</div><div className="started">Started {fmtTime(running.started_at)}</div><div className="estimate"><span>Current estimate</span><strong>{money(bill)}</strong></div><button className="danger full" disabled={busy} onClick={()=>endTable(t)}>End session & create bill</button></>:<><div className="empty-state"><div className="table-icon"><Table2 size={26}/></div><strong>Ready for next game</strong><span>No active session</span></div><button className="primary full" disabled={busy} onClick={()=>startTable(t)}>Start session</button></>}{profile.role==='owner' && <div className="rate-editor"><label>Hourly rate (₹)<input type="number" min="1" step="1" value={rateDrafts[t.id] ?? String(t.hourly_rate_paise/100)} onChange={e=>setRateDrafts(prev=>({...prev,[t.id]:e.target.value}))}/></label><button className="small-btn" disabled={busy} onClick={()=>updateTableRate(t)}>Save rate</button></div>}</article>
         })}</div>
         <section className="panel"><div className="section-heading"><div><h2>Pending bills</h2><p className="muted">Record payment only after confirming cash received or the merchant UPI transaction.</p></div></div>{unpaid.length===0?<p className="muted">No pending bills.</p>:<div className="table-scroll"><table><thead><tr><th>Table</th><th>Duration</th><th>Amount</th><th>Ended</th><th>Payment</th></tr></thead><tbody>{unpaid.map(s=><tr key={s.id}><td>{tables.find(t=>t.id===s.table_id)?.label || 'Table'}</td><td>{s.billable_minutes} min</td><td><strong>{money(s.amount_paise||0)}</strong></td><td>{s.ended_at?fmtTime(s.ended_at):'—'}</td><td><div className="actions"><button className="small-btn" disabled={busy} onClick={()=>receivePayment(s,'cash')}>Cash</button><button className="small-btn upi" disabled={busy} onClick={()=>receivePayment(s,'upi')}>UPI</button></div></td></tr>)}</tbody></table></div>}</section>
       </>}
@@ -188,7 +199,7 @@ export default function App() {
         <section className="panel"><h2>Recent payments</h2>{payments.slice(0,8).map(p=><div className="report-line" key={p.id}><span>{p.invoice_no} · {p.method.toUpperCase()}</span><strong>{money(p.amount_paise)}</strong></div>)}</section>
       </div>}
       {tab==='audit' && profile.role==='owner' && <section className="panel"><div className="section-heading"><div><h2>Activity history</h2><p className="muted">Records are written by database functions and protected from staff edits.</p></div><ShieldCheck/></div>{audits.length===0?<p className="muted">No activity recorded yet.</p>:<div className="audit-list">{audits.map(a=><div className="audit-item" key={a.id}><span className="audit-dot"/><div><strong>{a.action.replaceAll('_',' ')}</strong><p>{JSON.stringify(a.details)}</p><small>{fmtTime(a.created_at)}</small></div></div>)}</div>}</section>}
-      <footer>Green Pocket Snooker Zone · Standard rate ₹250/hour · <span>Cloud-synchronised</span></footer>
+      <footer>Green Pocket Snooker Zone · Table-specific hourly rates · <span>Cloud-synchronised</span></footer>
     </main>
   </div>;
 }
